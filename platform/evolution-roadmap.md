@@ -391,6 +391,128 @@ def wait_for_job(job_id: str, timeout: int = 300) -> JobResult:
     raise TimeoutError(f"Job {job_id} timeout")
 ```
 
+## 第四阶段：治理度量与 CI 集成（质量门禁）
+
+引入契约覆盖率概念，支持 CI 流程中的质量门禁。
+
+### 4.1 契约覆盖率检查
+
+```bash
+# 本地检查
+qtcloud-asset check
+
+# 指定阈值（CI 场景）
+qtcloud-asset check --fail-under=80
+
+# 多维度检查
+qtcloud-asset check --asset-coverage --fail-under=90
+qtcloud-asset check --property-match --fail-under=95
+```
+
+**实现逻辑**：
+
+```python
+# cli/commands/check.py
+@app.command()
+def check(
+    fail_under: Optional[float] = typer.Option(None, "--fail-under"),
+    asset_coverage: bool = typer.Option(True, "--asset-coverage/--no-asset-coverage"),
+    property_match: bool = typer.Option(True, "--property-match/--no-property-match"),
+    format: str = typer.Option("text", "--format", help="text|json|markdown"),
+):
+    """检查契约覆盖率"""
+    
+    results = {}
+    
+    if asset_coverage:
+        results["asset_coverage"] = calculate_asset_coverage()
+    
+    if property_match:
+        results["property_match"] = calculate_property_match()
+    
+    # 综合得分
+    overall = sum(r.score for r in results.values()) / len(results)
+    
+    # 输出报告
+    print(format_report(results, format))
+    
+    # CI 门禁
+    if fail_under and overall < fail_under:
+        typer.echo(f"❌ Coverage {overall:.1%} below threshold {fail_under:.1%}", err=True)
+        raise typer.Exit(code=1)
+```
+
+### 4.2 GitHub Check Run 集成
+
+Provider 自动创建 GitHub Check Run：
+
+```python
+# provider/github_integration.py
+async def create_coverage_check_run(
+    project_id: str,
+    pr_number: int,
+    coverage_report: CoverageReport
+):
+    """为 PR 创建覆盖率检查"""
+    
+    conclusion = "success" if coverage_report.overall >= 0.8 else "failure"
+    
+    await github_client.create_check_run(
+        repo=project.repo_url,
+        name="QuantTide Asset Coverage",
+        head_sha=pr.head_sha,
+        status="completed",
+        conclusion=conclusion,
+        output={
+            "title": f"Asset Coverage: {coverage_report.overall:.1%}",
+            "summary": generate_summary(coverage_report),
+            "annotations": generate_annotations(coverage_report.uncovered_assets)
+        }
+    )
+```
+
+### 4.3 覆盖率趋势追踪
+
+服务端存储历史数据：
+
+```python
+# provider/coverage_service.py
+async def record_coverage(project_id: str, coverage: CoverageReport):
+    """记录覆盖率历史"""
+    
+    record = CoverageRecord(
+        project_id=project_id,
+        timestamp=datetime.utcnow(),
+        overall=coverage.overall,
+        asset_coverage=coverage.asset_coverage,
+        property_match=coverage.property_match,
+        commit_sha=coverage.commit_sha
+    )
+    
+    await db.coverage_history.insert(record)
+    
+    # 检测趋势变化
+    trend = analyze_trend(project_id)
+    if trend.direction == "down" and trend.change > 0.1:
+        # 覆盖率下降超过 10%，发送警告
+        await notify_project_owner(project_id, trend)
+```
+
+**Dashboard 趋势图**：
+
+```
+资产覆盖率趋势 (最近 30 天)
+
+100% │                                    ╭─╮
+ 90% │              ╭──╮    ╭──╮    ╭────╯ ╰──╮
+ 80% │    ╭──╮  ╭──╯  ╰────╯  ╰────╯          ╰── 当前: 87.5%
+ 70% │────╯  ╰──╯
+     └────┬────┬────┬────┬────┬────┬────┬────┬────┬
+         4/10  4/12  4/14  4/16  4/18
+
+平均: 85.2%  趋势: ↑ 改善中
+```
+
 ## 演化时间线
 
 | 阶段 | 目标 | 关键交付 | 预计周期 |
@@ -398,5 +520,6 @@ def wait_for_job(job_id: str, timeout: int = 300) -> JobResult:
 | 第一阶段 | 建立连接 | Repository 抽象、登录认证 | 1-2 周 |
 | 第二阶段 | 数据迁移 | Pull/Push、Webhook 闭环 | 2-3 周 |
 | 第三阶段 | 能力上移 | 远程发现、策略下发 | 3-4 周 |
+| 第四阶段 | 质量门禁 | `check` 命令、CI 集成 | 2-3 周 |
 
-**总计**：6-9 周完成从 CLI 到平台的演化。
+**总计**：8-12 周完成从 CLI 到平台的演化。

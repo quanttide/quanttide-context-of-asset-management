@@ -328,6 +328,322 @@ class HealthDriftMetrics:
 
 > **通过主动引入混乱，验证秩序的稳健性。**
 
+## 契约覆盖率 (Contract Coverage)
+
+类比测试覆盖率，契约覆盖率衡量资产治理的完整程度。三层语义：
+
+### 第一层：资产覆盖率 (Asset Coverage)
+
+物理资产被契约"签收"的比例。
+
+```python
+class AssetCoverageCalculator:
+    """资产覆盖率计算器"""
+    
+    def calculate(self, project_id: str) -> AssetCoverage:
+        # 获取契约定义
+        contract = self.get_contract(project_id)
+        
+        # 获取实际资产（通过 Discovery）
+        actual_assets = self.run_discovery(project_id)
+        
+        # 计算覆盖
+        contracted_ids = {a.id for a in contract.assets}
+        actual_ids = {a.id for a in actual_assets}
+        
+        covered = len(contracted_ids & actual_ids)
+        uncovered = len(actual_ids - contracted_ids)
+        orphaned = len(contracted_ids - actual_ids)  # 契约有但实物已删除
+        
+        total = len(actual_ids) if actual_ids else 1  # 避免除零
+        
+        return AssetCoverage(
+            covered=covered,
+            uncovered=uncovered,
+            orphaned=orphaned,
+            coverage_rate=covered / total,
+            details={
+                "covered_assets": list(contracted_ids & actual_ids),
+                "uncovered_assets": list(actual_ids - contracted_ids),
+                "orphaned_assets": list(contracted_ids - actual_ids)
+            }
+        )
+```
+
+**示例输出**：
+
+```
+资产覆盖率: 85.7% (12/14)
+
+已覆盖资产 (12):
+  ✓ api_docs, backend_code, frontend_code, ...
+
+未覆盖资产 (2):
+  ⚠ legacy_script (未在契约中定义)
+  ⚠ temp_backup (未在契约中定义)
+
+孤儿资产 (1):
+  ✗ old_api (契约定义存在但实物已删除)
+```
+
+### 第二层：属性匹配率 (Property Match Rate)
+
+已覆盖资产的属性一致性。
+
+```python
+class PropertyMatchCalculator:
+    """属性匹配率计算器"""
+    
+    def calculate(self, asset_id: str) -> PropertyMatch:
+        contract_asset = self.get_contract_asset(asset_id)
+        actual_asset = self.get_actual_asset(asset_id)
+        
+        mismatches = []
+        
+        # 比较关键属性
+        for prop in ["type", "owner", "description", "tags"]:
+            contract_val = getattr(contract_asset, prop)
+            actual_val = getattr(actual_asset, prop)
+            
+            if contract_val != actual_val:
+                mismatches.append(PropertyMismatch(
+                    property=prop,
+                    expected=contract_val,
+                    actual=actual_val
+                ))
+        
+        total_props = len(["type", "owner", "description", "tags"])
+        matched = total_props - len(mismatches)
+        
+        return PropertyMatch(
+            asset_id=asset_id,
+            match_rate=matched / total_props,
+            mismatches=mismatches,
+            status="consistent" if not mismatches else "drifted"
+        )
+```
+
+**示例输出**：
+
+```
+属性匹配率: 75.0% (3/4 属性一致)
+
+资产: api_docs
+
+匹配属性:
+  ✓ type: documentation
+  ✓ owner: @zhangsan
+  ✓ tags: ["api", "public"]
+
+不匹配属性:
+  ✗ description
+    契约: "API 接口文档"
+    实际: "API docs (updated 2024)"
+```
+
+### 第三层：发现完整性 (Discovery Integrity)
+
+Discovery 扫描结果与 Registry 快照的一致性。
+
+```python
+class DiscoveryIntegrityChecker:
+    """发现完整性检查器"""
+    
+    def check(self, project_id: str) -> IntegrityReport:
+        # 最新 Discovery 结果
+        discovery_result = self.run_discovery(project_id)
+        
+        # 最新 Registry 快照
+        registry_snapshot = self.get_latest_snapshot(project_id)
+        
+        # 对比
+        discovery_assets = {a.id: a for a in discovery_result.assets}
+        registry_assets = {a.id: a for a in registry_snapshot.assets}
+        
+        inconsistencies = []
+        
+        for asset_id in set(discovery_assets.keys()) | set(registry_assets.keys()):
+            if asset_id not in discovery_assets:
+                inconsistencies.append(f"{asset_id}: Registry 存在但 Discovery 缺失")
+            elif asset_id not in registry_assets:
+                inconsistencies.append(f"{asset_id}: Discovery 发现但 Registry 未记录")
+            elif discovery_assets[asset_id].hash != registry_assets[asset_id].hash:
+                inconsistencies.append(f"{asset_id}: 哈希不一致（内容已变）")
+        
+        total = len(set(discovery_assets.keys()) | set(registry_assets.keys()))
+        consistent = total - len(inconsistencies)
+        
+        return IntegrityReport(
+            integrity_rate=consistent / total if total > 0 else 1.0,
+            inconsistencies=inconsistencies,
+            last_discovery=discovery_result.timestamp,
+            last_snapshot=registry_snapshot.timestamp
+        )
+```
+
+## CI 集成：`qtcloud-asset check`
+
+CLI 提供 `check` 命令，支持在 CI 流程中强制执行治理门禁。
+
+### 命令设计
+
+```bash
+# 基础检查
+qtcloud-asset check
+
+# 指定覆盖率阈值（失败时退出码非零）
+qtcloud-asset check --fail-under=80
+
+# 检查特定维度
+qtcloud-asset check --asset-coverage --fail-under=90
+qtcloud-asset check --property-match --fail-under=95
+qtcloud-asset check --discovery-integrity --fail-under=100
+
+# 输出格式
+qtcloud-asset check --format=json > coverage-report.json
+qtcloud-asset check --format=markdown > coverage-report.md
+```
+
+### 实现示例
+
+```python
+# cli/commands/check.py
+import typer
+from typing import Optional
+import sys
+
+app = typer.Typer()
+
+@app.command()
+def check(
+    fail_under: Optional[float] = typer.Option(None, "--fail-under", help="覆盖率阈值，低于此值则失败"),
+    asset_coverage: bool = typer.Option(True, "--asset-coverage/--no-asset-coverage", help="检查资产覆盖率"),
+    property_match: bool = typer.Option(True, "--property-match/--no-property-match", help="检查属性匹配率"),
+    discovery_integrity: bool = typer.Option(True, "--discovery-integrity/--no-discovery-integrity", help="检查发现完整性"),
+    format: str = typer.Option("text", "--format", help="输出格式: text, json, markdown"),
+):
+    """检查契约覆盖率，支持 CI 集成"""
+    
+    project_path = get_project_path()
+    
+    # 运行检查
+    results = {}
+    
+    if asset_coverage:
+        results["asset_coverage"] = AssetCoverageCalculator().calculate(project_path)
+    
+    if property_match:
+        results["property_match"] = PropertyMatchCalculator().calculate(project_path)
+    
+    if discovery_integrity:
+        results["discovery_integrity"] = DiscoveryIntegrityChecker().check(project_path)
+    
+    # 计算综合得分
+    scores = [
+        r.coverage_rate if hasattr(r, "coverage_rate") else r.match_rate if hasattr(r, "match_rate") else r.integrity_rate
+        for r in results.values()
+    ]
+    overall_score = sum(scores) / len(scores) if scores else 0
+    
+    # 输出报告
+    if format == "json":
+        print(json.dumps({k: v.__dict__ for k, v in results.items()}, indent=2))
+    elif format == "markdown":
+        print(generate_markdown_report(results, overall_score))
+    else:
+        print(generate_text_report(results, overall_score))
+    
+    # 判断是否失败
+    if fail_under is not None and overall_score < fail_under:
+        typer.echo(f"\n❌ 检查失败: 综合覆盖率 {overall_score:.1%} 低于阈值 {fail_under:.1%}", err=True)
+        sys.exit(1)
+    
+    typer.echo(f"\n✅ 检查通过: 综合覆盖率 {overall_score:.1%}")
+```
+
+### GitHub Actions 集成示例
+
+```yaml
+# .github/workflows/asset-governance.yml
+name: Asset Governance Check
+
+on:
+  pull_request:
+    paths:
+      - '.quanttide/**'
+      - '**/README.md'
+      - 'docs/**'
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup QuantTide CLI
+        uses: quanttide/setup-qtcloud-asset@v1
+        with:
+          version: '0.2.0'
+      
+      - name: Check Asset Coverage
+        run: qtcloud-asset check --fail-under=80 --format=markdown >> $GITHUB_STEP_SUMMARY
+        
+      - name: Upload Coverage Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage-report.md
+```
+
+### 报告示例
+
+```markdown
+# 契约覆盖率报告
+
+项目: qtcloud-asset  
+检查时间: 2026-04-18 10:00:00  
+综合得分: 87.5% ✅
+
+## 资产覆盖率: 85.7%
+
+| 指标 | 数值 |
+|------|------|
+| 已覆盖 | 12 |
+| 未覆盖 | 2 |
+| 孤儿资产 | 1 |
+
+### 未覆盖资产
+- `legacy_script` - 建议添加到契约或删除
+- `temp_backup` - 临时文件，建议清理
+
+## 属性匹配率: 91.7%
+
+平均匹配率 across 12 个资产
+
+### 漂移资产
+| 资产 | 不匹配属性 |
+|------|-----------|
+| api_docs | description |
+
+## 发现完整性: 100.0%
+
+Discovery 与 Registry 完全一致 ✅
+
+---
+
+**结论**: 综合覆盖率 87.5% 达到阈值 80%，检查通过。
+```
+
+### 演进路线
+
+| 阶段 | 功能 | 说明 |
+|------|------|------|
+| v0.2.0 | 基础检查 | `qtcloud-asset check` 仅支持本地检查 |
+| v0.3.0 | 阈值控制 | 增加 `--fail-under` 参数 |
+| v0.4.0 | 多维度 | 支持三层语义分别检查 |
+| v0.5.0 | 远程报告 | 结果上报 Provider，生成趋势图 |
+| v0.6.0 | 智能建议 | 根据未覆盖资产类型推荐契约模板 |
+
 ## 总结
 
 Contract Monkey 将量潮架构从"静态登记"推向"动态韧性"：
@@ -335,5 +651,6 @@ Contract Monkey 将量潮架构从"静态登记"推向"动态韧性"：
 - **Drift Injection**：验证发现机制的灵敏度
 - **Collision Testing**：验证元治理的防呆能力
 - **Cognitive Load Test**：验证验证机制的质量把关
+- **Contract Coverage**：量化治理完整度，支持 CI 门禁
 
 这不仅仅是在写代码，而是在构建一个**具备免疫系统的数字组织**。
