@@ -34,6 +34,8 @@
 - [成熟度评估](platform/maturity-model-assessment.md) - 工业级治理架构典范（9.3/10）
 - [层级评估](platform/architecture-level-assessment.md) - L7 巅峰，向 L8 突破（行业定义者）
 - [元模型兼容性](platform/meta-model-compatibility.md) - 超越行业标准的治理主权
+- [确定性哲学](platform/determinism-philosophy.md) - 认知模型的确定性（与 Borg、Chaos Engineering 并列）
+- [Contract Monkey](platform/contract-monkey.md) - 治理混沌工程（动态韧性测试）
 
 ## 设计原则
 
