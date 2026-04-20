@@ -1,7 +1,5 @@
 # 架构设计文档
 
-> 详细架构评估报告见 [docs/report/architecture-assessment.md](../../report/architecture-assessment.md)
-
 从治理哲学、演化策略和系统健壮性三个维度进行专业评估。
 
 ### 核心评价：高内聚的"治理闭环"
