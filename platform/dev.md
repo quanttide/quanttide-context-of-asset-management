@@ -447,6 +447,55 @@ Developer -> CLI -> Provider API -> Contract DB
                 Catalog History DB
 ```
 
+## 事件流抽象
+
+将所有 Discovery 结果抽象为"事件流"，实现"感知层"的闭环。
+
+```python
+class DiscoveryEvent(BaseModel):
+    event_type: str  # asset_found | asset_missing | asset_modified | mismatch_detected
+    asset_id: str
+    project_id: str
+    timestamp: datetime
+    payload: Dict[str, Any]
+    severity: str  # info | warning | error
+
+class EventBus:
+    def subscribe(self, event_type: str, handler: Callable):
+        self.handlers.setdefault(event_type, []).append(handler)
+    
+    async def publish(self, event: DiscoveryEvent):
+        for handler in self.handlers.get(event.event_type, []):
+            await handler(event)
+
+bus = EventBus()
+bus.subscribe("mismatch_detected", notify_feishu)
+bus.subscribe("mismatch_detected", update_dashboard)
+```
+
+## 契约版本管理
+
+对每一次 `qtcloud-asset contract push` 进行快照存储，拥有完整的意图演化历史。
+
+```python
+class ContractVersion(BaseModel):
+    id: str
+    project_id: str
+    contract: Contract
+    version: str
+    digest: str
+    change_type: str  # major | minor | patch
+    committed_by: str
+    committed_at: datetime
+    status: str  # active | rolled_back | deprecated
+```
+
+```bash
+qtcloud-asset contract history --project qtcloud-asset
+qtcloud-asset contract diff 1.2.0 1.3.0
+qtcloud-asset contract rollback 1.2.0
+```
+
 ## 核心建议
 
 ### 版本兼容性 (Graceful Degradation)
