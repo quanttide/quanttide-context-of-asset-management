@@ -8,10 +8,28 @@ Profile 资产目录的层次结构参考数据仓库建模体系。
 
 | 数据仓库 | Databricks Unity Catalog | Profile |
 |----------|--------------------------|---------|
-| 实例 | Metastore | Profile 仓库 |
+| 实例 / Metastore | Metastore | Profile 仓库 |
 | 目录 | Catalog | 一级目录（资产目录） |
 | 结构定义 | Schema | `schema.json` |
 | 数据实例 | Table | `record.json` |
+
+## Metastore 与租户
+
+Metastore（元数据存储）是数据仓库体系中最顶层的容器，管理所有目录、Schema、表的结构信息。在 Unity Catalog 中，Metastore 是**多租户隔离边界**：
+
+- 一个组织 / 云账号通常一个 Metastore
+- 权限在 Metastore 或 Catalog 层级授予，向下继承
+- 不同 Metastore 之间的资源不共享
+
+对应到量潮资产体系，Metastore 即**租户**概念。现有租户包括：
+
+| 租户 | 对应身份 |
+|------|----------|
+| `quanttide` | 开源主组织 |
+| `quanttide-tech` | 量潮科技内部 |
+| `quanttide-archive` | 归档站 |
+
+Profile 仓库本身即扮演 Metastore / 租户级顶层容器，其下的一级资产目录对应 Catalog。
 
 ## 术语选择说明
 
